@@ -1,0 +1,25 @@
+name: CGV IMAX Trace
+on:
+  schedule:
+    - cron: '*/10 * * * *' # 10분마다 실행
+  workflow_dispatch: # 수동 실행 버튼
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install selenium webdriver-manager requests
+      - name: Run script
+        env:
+          TARGET_DATE: ${{ secrets.TARGET_DATE }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          MOVIE_TITLE: ${{ secrets.MOVIE_TITLE }}
+        run: python cgv_github.py
