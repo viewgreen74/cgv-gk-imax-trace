@@ -20,28 +20,35 @@ def send_telegram(message):
     requests.post(url, json={"chat_id": CHAT_ID, "text": message})
 
 def get_latest_command():
-    """텔레그램 메시지를 읽어와서 설정을 업데이트함"""
+    """텔레그램 메시지 중 '가장 마지막' 메시지 하나만 정확히 추출"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
     try:
         res = requests.get(url).json()
         if res["ok"] and res["result"]:
-            # 가장 최근 메시지 확인
-            last_update = res["result"][-1]
-            text = last_update.get("message", {}).get("text", "")
-            user_id = str(last_update.get("message", {}).get("from", {}).get("id", ""))
-            msg_id = last_update.get("message", {}).get("message_id")
-
-            # 중복 실행 방지를 위해 최근 10분 내 메시지만 처리 (GitHub 실행 주기 기준)
-            if user_id == CHAT_ID and text.startswith("/set"):
-                parts = text.split(" ")
+            # 메시지 목록을 시간 역순(최신순)으로 정렬
+            valid_commands = []
+            for update in res["result"]:
+                msg = update.get("message", {})
+                text = msg.get("text", "")
+                user_id = str(msg.get("from", {}).get("id", ""))
+                
+                if user_id == CHAT_ID and text.startswith("/set"):
+                    valid_commands.append(text)
+            
+            # 유효한 명령어 중 가장 마지막(최신) 것만 선택
+            if valid_commands:
+                last_command = valid_commands[-1]
+                parts = last_command.split(" ")
                 new_date = re.sub(r'[^0-9]', '', parts[1]) if len(parts) >= 2 else TARGET_DATE
                 new_title = " ".join(parts[2:]) if len(parts) > 2 else ""
                 
-                # [중요] 사용자에게 변경 확인 메시지 발송
-                confirm_msg = f"⚙️ 설정 변경 완료!\n📅 날짜: {new_date}\n🎬 영화: {new_title if new_title else '전체'}\n위 조건으로 추적을 시작합니다."
+                # 확인 메시지 발송
+                confirm_msg = f"⚙️ 최신 명령 확인!\n📅 날짜: {new_date}\n🎬 영화: {new_title if new_title else '전체'}\n위 조건으로 지금 즉시 스캔합니다."
                 send_telegram(confirm_msg)
                 return new_date, new_title
-    except: pass
+    except Exception as e:
+        print(f"명령어 확인 중 오류: {e}")
+    
     return TARGET_DATE, MOVIE_TITLE
 
 def check_cgv_online():
@@ -54,25 +61,25 @@ def check_cgv_online():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     
     try:
-        # 1. 실행 시점에 텔레그램 명령어가 있는지 확인 후 적용
+        # 실행 시점에 텔레그램 최신 명령 확인
         current_date, current_title = get_latest_command()
 
         url = f"https://m.cgv.co.kr/Schedule/?theaterCode=0281&playDate={current_date}"
         driver.get(url)
-        time.sleep(12)
+        time.sleep(15) # 충분한 로딩 시간
 
         page_source = driver.page_source.upper()
-        
-        # 2. 날짜 확인 로그 출력 (GitHub Actions 로그용)
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 추적 중: {current_date} / {current_title}")
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        print(f"[{timestamp}] 검사 중: {current_date} / {current_title}")
 
-        # 3. IMAX 및 영화 제목 체크
+        # IMAX 및 영화 제목 체크
         if "IMAX" in page_source:
+            # 제목 필터링 (입력값이 있을 때만)
             if not current_title or current_title.upper() in page_source:
-                send_telegram(f"🎯 [오픈 감지!] {current_date} {current_title} IMAX 예매가 가능합니다!")
+                send_telegram(f"🎯 [오픈 감지!] {current_date} {current_title} IMAX 예매가 열렸습니다!")
                 return
         
-        print("❄️ 조건 미충족 (아직 오픈되지 않음)")
+        print("❄️ 아직 조건에 맞는 일정이 없습니다.")
 
     finally:
         driver.quit()
