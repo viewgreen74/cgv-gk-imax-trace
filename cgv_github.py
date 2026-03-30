@@ -14,40 +14,35 @@ TARGET_DATE = os.environ.get('TARGET_DATE')
 MOVIE_TITLE = os.environ.get('MOVIE_TITLE', '')
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
-MY_GITHUB_TOKEN = os.environ.get('MY_GITHUB_TOKEN') # PAT 토큰
-REPO_NAME = "본인의계정명/저장소명" # 예: "hong-gildong/cgv-trace" 직접 수정 필요!
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": CHAT_ID, "text": message})
 
 def get_latest_command():
-    """텔레그램 최신 메시지에서 /set 명령어를 읽어옴"""
+    """텔레그램 메시지를 읽어와서 설정을 업데이트함"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
     try:
         res = requests.get(url).json()
         if res["ok"] and res["result"]:
-            # 가장 최근 메시지부터 역순으로 확인
-            for update in reversed(res["result"]):
-                text = update.get("message", {}).get("text", "")
-                user_id = str(update.get("message", {}).get("from", {}).get("id", ""))
-                
-                # 본인이 보낸 메시지이고 /set으로 시작하는지 확인
-                if user_id == CHAT_ID and text.startswith("/set"):
-                    parts = text.split(" ")
-                    if len(parts) >= 2:
-                        new_date = re.sub(r'[^0-9]', '', parts[1])
-                        new_title = " ".join(parts[2:]) if len(parts) > 2 else ""
-                        return new_date, new_title
-    except: pass
-    return None, None
+            # 가장 최근 메시지 확인
+            last_update = res["result"][-1]
+            text = last_update.get("message", {}).get("text", "")
+            user_id = str(last_update.get("message", {}).get("from", {}).get("id", ""))
+            msg_id = last_update.get("message", {}).get("message_id")
 
-def update_github_secret(name, value):
-    """GitHub API를 사용하여 Secret 값을 업데이트 (간이 방식)"""
-    # 주의: 실제 GitHub API는 암호화(Sodium)가 필요하여 복잡하므로 
-    # 여기서는 '날짜와 제목이 바뀌었음'을 알리는 로그용으로만 출력하거나 
-    # 실제 반영을 위해선 수동 업데이트 권장. (API 반영 로직은 별도 라이브러리 필요)
-    print(f"🔄 요청된 설정: 날짜({name}), 영화({value})")
+            # 중복 실행 방지를 위해 최근 10분 내 메시지만 처리 (GitHub 실행 주기 기준)
+            if user_id == CHAT_ID and text.startswith("/set"):
+                parts = text.split(" ")
+                new_date = re.sub(r'[^0-9]', '', parts[1]) if len(parts) >= 2 else TARGET_DATE
+                new_title = " ".join(parts[2:]) if len(parts) > 2 else ""
+                
+                # [중요] 사용자에게 변경 확인 메시지 발송
+                confirm_msg = f"⚙️ 설정 변경 완료!\n📅 날짜: {new_date}\n🎬 영화: {new_title if new_title else '전체'}\n위 조건으로 추적을 시작합니다."
+                send_telegram(confirm_msg)
+                return new_date, new_title
+    except: pass
+    return TARGET_DATE, MOVIE_TITLE
 
 def check_cgv_online():
     chrome_options = Options()
@@ -59,12 +54,8 @@ def check_cgv_online():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     
     try:
-        # 1. 텔레그램 명령어 체크
-        cmd_date, cmd_title = get_latest_command()
-        current_date = cmd_date if cmd_date else TARGET_DATE
-        current_title = cmd_title if cmd_date else MOVIE_TITLE
-
-        print(f"🚀 추적 대상: {current_date} | 영화: {current_title if current_title else '전체'}")
+        # 1. 실행 시점에 텔레그램 명령어가 있는지 확인 후 적용
+        current_date, current_title = get_latest_command()
 
         url = f"https://m.cgv.co.kr/Schedule/?theaterCode=0281&playDate={current_date}"
         driver.get(url)
@@ -72,13 +63,16 @@ def check_cgv_online():
 
         page_source = driver.page_source.upper()
         
-        # 2. 결과 검사 로직 (동일)
+        # 2. 날짜 확인 로그 출력 (GitHub Actions 로그용)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 추적 중: {current_date} / {current_title}")
+
+        # 3. IMAX 및 영화 제목 체크
         if "IMAX" in page_source:
             if not current_title or current_title.upper() in page_source:
-                send_telegram(f"🎯 [오픈!] {current_date} {current_title} IMAX 감지!")
+                send_telegram(f"🎯 [오픈 감지!] {current_date} {current_title} IMAX 예매가 가능합니다!")
                 return
         
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 조건 미충족 (대기 중)")
+        print("❄️ 조건 미충족 (아직 오픈되지 않음)")
 
     finally:
         driver.quit()
