@@ -20,35 +20,28 @@ def send_telegram(message):
     requests.post(url, json={"chat_id": CHAT_ID, "text": message})
 
 def get_latest_command():
-    """텔레그램 메시지 중 '가장 마지막' 메시지 하나만 정확히 추출"""
+    """텔레그램에서 가장 최신 /set 명령어 하나만 추출"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
     try:
         res = requests.get(url).json()
         if res["ok"] and res["result"]:
-            # 메시지 목록을 시간 역순(최신순)으로 정렬
             valid_commands = []
             for update in res["result"]:
                 msg = update.get("message", {})
                 text = msg.get("text", "")
                 user_id = str(msg.get("from", {}).get("id", ""))
-                
                 if user_id == CHAT_ID and text.startswith("/set"):
                     valid_commands.append(text)
             
-            # 유효한 명령어 중 가장 마지막(최신) 것만 선택
             if valid_commands:
                 last_command = valid_commands[-1]
                 parts = last_command.split(" ")
                 new_date = re.sub(r'[^0-9]', '', parts[1]) if len(parts) >= 2 else TARGET_DATE
                 new_title = " ".join(parts[2:]) if len(parts) > 2 else ""
                 
-                # 확인 메시지 발송
-                confirm_msg = f"⚙️ 최신 명령 확인!\n📅 날짜: {new_date}\n🎬 영화: {new_title if new_title else '전체'}\n위 조건으로 지금 즉시 스캔합니다."
-                send_telegram(confirm_msg)
+                send_telegram(f"⚙️ 명령 확인: {new_date} / {new_title if new_title else '전체'}\n데이터 검증을 시작합니다.")
                 return new_date, new_title
-    except Exception as e:
-        print(f"명령어 확인 중 오류: {e}")
-    
+    except: pass
     return TARGET_DATE, MOVIE_TITLE
 
 def check_cgv_online():
@@ -61,25 +54,32 @@ def check_cgv_online():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     
     try:
-        # 실행 시점에 텔레그램 최신 명령 확인
         current_date, current_title = get_latest_command()
-
         url = f"https://m.cgv.co.kr/Schedule/?theaterCode=0281&playDate={current_date}"
         driver.get(url)
-        time.sleep(15) # 충분한 로딩 시간
+        time.sleep(15) # 로딩 대기
 
-        page_source = driver.page_source.upper()
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        print(f"[{timestamp}] 검사 중: {current_date} / {current_title}")
-
-        # IMAX 및 영화 제목 체크
-        if "IMAX" in page_source:
-            # 제목 필터링 (입력값이 있을 때만)
-            if not current_title or current_title.upper() in page_source:
-                send_telegram(f"🎯 [오픈 감지!] {current_date} {current_title} IMAX 예매가 열렸습니다!")
-                return
+        # [핵심 검증] 현재 페이지 소스에 내가 입력한 날짜가 실제로 존재하는지 확인
+        # CGV는 페이지 상단에 YYYY.MM.DD 형식으로 날짜를 표시합니다.
+        formatted_date = f"{current_date[:4]}.{current_date[4:6]}.{current_date[6:]}"
+        page_source = driver.page_source
         
-        print("❄️ 아직 조건에 맞는 일정이 없습니다.")
+        # 1. 날짜 불일치 시 (자동 이동된 경우) 알람 무시
+        if formatted_date not in page_source:
+            print(f"[{datetime.now()}] ⏳ 대기: {current_date} 페이지가 아직 생성되지 않음 (다른 날짜로 이동됨)")
+            return
+
+        # 2. 날짜가 일치한다면 IMAX 키워드와 영화 제목 검사
+        source_upper = page_source.upper()
+        if "IMAX" in source_upper:
+            # 영화 제목 필터 적용
+            if not current_title or current_title.upper() in source_upper:
+                # '상영시간표' 혹은 'hall_name'이 있어야 진짜 시간표가 로드된 것임
+                if "HALL_NAME" in source_upper or "상영시간표" in page_source:
+                    send_telegram(f"🎯 [진짜 오픈!] {current_date} {current_title} IMAX 예매가 가능합니다!")
+                    return
+        
+        print(f"[{datetime.now()}] ❄️ {current_date} : 페이지는 열렸으나 IMAX 배정 전입니다.")
 
     finally:
         driver.quit()
