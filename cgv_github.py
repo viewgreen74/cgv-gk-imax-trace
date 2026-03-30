@@ -20,7 +20,6 @@ def send_telegram(message):
     requests.post(url, json={"chat_id": CHAT_ID, "text": message})
 
 def get_latest_command():
-    """텔레그램 최신 명령어 추출"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
     try:
         res = requests.get(url).json()
@@ -32,7 +31,6 @@ def get_latest_command():
                 user_id = str(msg.get("from", {}).get("id", ""))
                 if user_id == CHAT_ID and text.startswith("/set"):
                     valid_commands.append(text)
-            
             if valid_commands:
                 last_command = valid_commands[-1]
                 parts = last_command.split(" ")
@@ -53,46 +51,44 @@ def check_cgv_online():
     
     try:
         current_date, current_title = get_latest_command()
-        
-        # 텔레그램 명령이 바뀌었음을 인지시키기 위한 로그
-        print(f"🔎 검사 시작: 날짜({current_date}), 영화({current_title})")
-        
         url = f"https://m.cgv.co.kr/Schedule/?theaterCode=0281&playDate={current_date}"
         driver.get(url)
-        time.sleep(15) # 충분한 로딩 대기
+        time.sleep(12) 
 
+        # [검증 1] 실제 선택된 날짜(active) 추출
+        # CGV 모바일은 선택된 날짜 li 태그에 'on' 또는 특정 클래스를 붙입니다.
+        try:
+            active_date_element = driver.find_element(By.CSS_SELECTOR, "li.on[date]")
+            actual_date = active_date_element.get_attribute("date")
+        except:
+            actual_date = "unknown"
+
+        print(f"🔎 요청 날짜: {current_date} | 실제 표시 날짜: {actual_date}")
+
+        # [검증 2] 요청한 날짜와 실제 페이지 날짜가 다르면 즉시 종료
+        if current_date != actual_date:
+            print(f"⏳ {current_date} 페이지가 아직 생성되지 않았습니다. (현재 {actual_date} 표시 중)")
+            return
+
+        # [검증 3] 상영 시간표 데이터가 실제로 있는지 확인
         page_source = driver.page_source
-        
-        # [검증 1] 현재 페이지가 내가 요청한 '그 날짜'가 맞는지 엄격하게 확인
-        # CGV 모바일은 선택된 날짜를 "2026.04.07" 형식으로 특정 영역에 표시함
-        formatted_date = f"{current_date[:4]}.{current_date[4:6]}.{current_date[6:]}"
-        
-        # 만약 요청한 날짜 텍스트가 페이지 소스 상의 '날짜 선택 영역'에 포함되어 있지 않다면 리다이렉트된 것임
-        # 더 정확하게 하기 위해 "YYYY.MM.DD" 패턴이 페이지에 있는지 확인
-        if formatted_date not in page_source:
-            print(f"⚠️ 경고: {current_date} 페이지가 아닙니다. (CGV 자동 날짜 이동 감지)")
+        if "hall_name" not in page_source:
+            print(f"❄️ {current_date} : 날짜는 열렸으나 상영 정보가 없습니다.")
             return
 
-        # [검증 2] 날짜는 맞는데, 실제로 상영 시간표 데이터가 로드되었는지 확인
-        # 시간표가 없으면 '상영 가능한 시간이 없습니다' 등의 메시지가 뜸
-        if "hall_name" not in page_source and "상영시간표" not in page_source:
-            print(f"⏳ {current_date}: 날짜 페이지는 열렸으나 상영 정보가 아직 없습니다.")
-            return
-
-        # [검증 3] IMAX 관이 있고, 영화 제목이 일치하는지 확인
+        # [검증 4] IMAX 및 제목 매칭
         source_upper = page_source.upper()
         if "IMAX" in source_upper:
             if not current_title or current_title.upper() in source_upper:
-                # 최종 확인 성공 시에만 텔레그램 발송
-                send_telegram(f"🎯 [진짜오픈!] {current_date} {current_title} IMAX 감지!\n지금 바로 예매하세요!")
-                print(f"🔔 알림 발송 완료: {current_date}")
+                send_telegram(f"🎯 [진짜오픈!] {current_date} {current_title} IMAX 감지!")
+                print("🔔 알림 발송!")
             else:
-                print(f"❄️ IMAX는 있으나 영화 제목({current_title})이 일치하지 않음.")
+                print(f"❄️ IMAX는 있으나 제목({current_title}) 불일치")
         else:
-            print(f"❄️ {current_date}: 일반관만 오픈됨 (IMAX 없음).")
+            print(f"❄️ {current_date} : 일반관만 존재")
 
     except Exception as e:
-        print(f"❌ 에러: {e}")
+        print(f"❌ 오류: {e}")
     finally:
         driver.quit()
 
